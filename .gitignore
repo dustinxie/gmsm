@@ -31,3 +31,7 @@ _ReSharper*/
 #Nuget packages folder
 packages/
 *.pem
+
+#ignore test file
+*.dat
+*.db
