@@ -20,100 +20,96 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"math/big"
 	"net"
-	"os"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
+func TestKey(t *testing.T) {
+	req := require.New(t)
+
+	priv, err := GenerateKey()
+	req.NoError(err)
+
+	der, err := MarshalSm2UnecryptedPrivateKey(priv)
+	req.NoError(err)
+	sk, err := ParsePKCS8UnecryptedPrivateKey(der)
+	req.NoError(err)
+	req.Equal(priv, sk)
+
+	der, err = MarshalSm2PublicKey(&priv.PublicKey)
+	req.NoError(err)
+	pk, err := ParseSm2PublicKey(der)
+	req.NoError(err)
+	req.Equal(&priv.PublicKey, pk)
+}
+
 func TestSm2(t *testing.T) {
-	priv, err := GenerateKey() // 生成密钥对
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("%v\n", priv.Curve.IsOnCurve(priv.X, priv.Y)) // 验证是否为sm2的曲线
-	pub := &priv.PublicKey
+	req := require.New(t)
+
+	priv, err := GenerateKey()
+	req.NoError(err)
+	req.Equal(true, priv.Curve.IsOnCurve(priv.X, priv.Y))
+	fmt.Println("Check || private/public key on curve")
+	pub := priv.Public().(*PublicKey)
+
+	// test encrypt/decrypt
 	msg := []byte("123456")
 	d0, err := pub.Encrypt(msg)
-	if err != nil {
-		fmt.Printf("Error: failed to encrypt %s: %v\n", msg, err)
-		return
-	}
-	// fmt.Printf("Cipher text = %v\n", d0)
+	req.NoError(err)
 	d1, err := priv.Decrypt(d0)
-	if err != nil {
-		fmt.Printf("Error: failed to decrypt: %v\n", err)
-	}
-	fmt.Printf("clear text = %s\n", d1)
-	ok, err := WritePrivateKeytoPem("priv.pem", priv, nil) // 生成密钥文件
-	if ok != true {
-		log.Fatal(err)
-	}
-	pubKey, _ := priv.Public().(*PublicKey)
-	ok, err = WritePublicKeytoPem("pub.pem", pubKey, nil) // 生成公钥文件
-	if ok != true {
-		log.Fatal(err)
-	}
-	msg = []byte("test")
-	err = ioutil.WriteFile("ifile", msg, os.FileMode(0644)) // 生成测试文件
-	if err != nil {
-		log.Fatal(err)
-	}
-	privKey, err := ReadPrivateKeyFromPem("priv.pem", nil) // 读取密钥
-	if err != nil {
-		log.Fatal(err)
-	}
-	pubKey, err = ReadPublicKeyFromPem("pub.pem", nil) // 读取公钥
-	if err != nil {
-		log.Fatal(err)
-	}
-	msg, _ = ioutil.ReadFile("ifile")                // 从文件读取数据
-	sign, err := privKey.Sign(rand.Reader, msg, nil) // 签名
-	if err != nil {
-		log.Fatal(err)
-	}
-	err = ioutil.WriteFile("ofile", sign, os.FileMode(0644))
-	if err != nil {
-		log.Fatal(err)
-	}
-	signdata, _ := ioutil.ReadFile("ofile")
-	ok = privKey.Verify(msg, signdata) // 密钥验证
-	if ok != true {
-		fmt.Printf("Verify error\n")
-	} else {
-		fmt.Printf("Verify ok\n")
-	}
-	ok = pubKey.Verify(msg, signdata) // 公钥验证
-	if ok != true {
-		fmt.Printf("Verify error\n")
-	} else {
-		fmt.Printf("Verify ok\n")
-	}
+	req.NoError(err)
+	req.Equal(msg, d1)
+	fmt.Println("Check || encrypt/decrypt")
+
+	// test pem
+	ok, err := WritePrivateKeytoPem("priv.pem", priv, msg)
+	req.NoError(err)
+	req.Equal(true, ok)
+	ok, err = WritePublicKeytoPem("pub.pem", pub, msg)
+	req.NoError(err)
+	req.Equal(true, ok)
+	privKey, err := ReadPrivateKeyFromPem("priv.pem", msg)
+	req.NoError(err)
+	req.Equal(priv, privKey)
+	pubKey, err := ReadPublicKeyFromPem("pub.pem", msg)
+	req.NoError(err)
+	req.Equal(pub, pubKey)
+	fmt.Println("Check || pem")
+
+	// test sign/verify
+	msg = []byte("test data to be signed")
+	signdata, err := privKey.Sign(rand.Reader, msg, nil)
+	req.NoError(err)
+	req.Equal(true, privKey.Verify(msg, signdata))
+	req.Equal(true, pubKey.Verify(msg, signdata))
+	fmt.Println("Check || sign/verify")
+}
+
+func TestCert(t *testing.T) {
+	req := require.New(t)
+
+	priv, err := GenerateKey()
+	req.NoError(err)
+
 	templateReq := CertificateRequest{
 		Subject: pkix.Name{
 			CommonName:   "test.example.com",
 			Organization: []string{"Test"},
 		},
-		//		SignatureAlgorithm: ECDSAWithSHA256,
 		SignatureAlgorithm: SM2WithSM3,
 	}
-	_, err = CreateCertificateRequestToPem("req.pem", &templateReq, privKey)
-	if err != nil {
-		log.Fatal(err)
-	}
-	req, err := ReadCertificateRequestFromPem("req.pem")
-	if err != nil {
-		log.Fatal(err)
-	}
-	err = req.CheckSignature()
-	if err != nil {
-		log.Fatalf("Request CheckSignature error:%v", err)
-	} else {
-		fmt.Printf("CheckSignature ok\n")
-	}
+	_, err = CreateCertificateRequestToPem("req.pem", &templateReq, priv)
+	req.NoError(err)
+	pkcs10, err := ReadCertificateRequestFromPem("req.pem")
+	req.NoError(err)
+	req.NoError(pkcs10.CheckSignature())
+	fmt.Println("Check || PKCS10 signature")
+
 	testExtKeyUsage := []ExtKeyUsage{ExtKeyUsageClientAuth, ExtKeyUsageServerAuth}
 	testUnknownExtKeyUsage := []asn1.ObjectIdentifier{[]int{1, 2, 3}, []int{2, 59, 1}}
 	extraExtensionData := []byte("extra extension")
@@ -143,7 +139,6 @@ func TestSm2(t *testing.T) {
 		NotBefore: time.Unix(1000, 0),
 		NotAfter:  time.Unix(100000, 0),
 
-		//		SignatureAlgorithm: ECDSAWithSHA256,
 		SignatureAlgorithm: SM2WithSM3,
 
 		SubjectKeyId: []byte{1, 2, 3, 4},
@@ -180,21 +175,13 @@ func TestSm2(t *testing.T) {
 			},
 		},
 	}
-	pubKey, _ = priv.Public().(*PublicKey)
-	ok, _ = CreateCertificateToPem("cert.pem", &template, &template, pubKey, privKey)
-	if ok != true {
-		fmt.Printf("failed to create cert file\n")
-	}
+	ok, err := CreateCertificateToPem("cert.pem", &template, &template, priv.Public().(*PublicKey), priv)
+	req.NoError(err)
+	req.Equal(ok, true)
 	cert, err := ReadCertificateFromPem("cert.pem")
-	if err != nil {
-		fmt.Printf("failed to read cert file")
-	}
-	err = cert.CheckSignature(cert.SignatureAlgorithm, cert.RawTBSCertificate, cert.Signature)
-	if err != nil {
-		log.Fatal(err)
-	} else {
-		fmt.Printf("CheckSignature ok\n")
-	}
+	req.NoError(err)
+	req.NoError(cert.CheckSignature(cert.SignatureAlgorithm, cert.RawTBSCertificate, cert.Signature))
+	fmt.Println("Check || X.509 signature")
 }
 
 func BenchmarkSM2(t *testing.B) {
